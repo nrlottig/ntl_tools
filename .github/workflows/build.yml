@@ -1,0 +1,103 @@
+name: Build Desktop Apps
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+        app: [prodss-process, dendy-process, new-app]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Resolve tag filter for matrix app
+        id: tag_filter
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          tag = os.environ.get("GITHUB_REF_NAME", "")
+          app = os.environ.get("MATRIX_APP", "")
+
+          # Supported tag forms:
+          # - v1.2.3            -> build all apps
+          # - v1.2.3-prodss-process -> build only matching app
+            should_build = "true"
+            suffix = f"-{app}"
+            tag_body = tag[1:] if tag.startswith("v") else tag
+            if "-" in tag_body:
+              should_build = "true" if tag.endswith(suffix) else "false"
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+              fh.write(f"should_build={should_build}\n")
+          print(f"tag={tag} app={app} should_build={should_build}")
+          PY
+        env:
+          MATRIX_APP: ${{ matrix.app }}
+
+      - name: Install app dependencies
+        if: steps.tag_filter.outputs.should_build == 'true'
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r apps/${{ matrix.app }}/requirements.txt
+
+      - name: Build with PyInstaller
+        if: steps.tag_filter.outputs.should_build == 'true'
+        shell: bash
+        run: |
+          pyinstaller apps/${{ matrix.app }}/build.spec --noconfirm --clean
+
+      - name: Package build output
+        if: steps.tag_filter.outputs.should_build == 'true'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os
+          import shutil
+          from pathlib import Path
+
+          app = os.environ["APP_NAME"]
+          os_name = os.environ["RUNNER_OS"]
+          dist_dir = Path("dist") / app
+          archive_base = Path("dist") / f"{app}-{os_name}"
+
+          if not dist_dir.exists():
+              raise SystemExit(f"Missing build output: {dist_dir}")
+
+          archive_path = shutil.make_archive(str(archive_base), "zip", root_dir=str(dist_dir))
+          print(f"Created {archive_path}")
+          PY
+        env:
+          APP_NAME: ${{ matrix.app }}
+
+      - name: Upload workflow artifact
+        if: steps.tag_filter.outputs.should_build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.app }}-${{ runner.os }}
+          path: dist/${{ matrix.app }}-${{ runner.os }}.zip
+
+      - name: Upload release asset
+        if: steps.tag_filter.outputs.should_build == 'true' && startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ matrix.app }}-*.zip

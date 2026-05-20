@@ -1,0 +1,7 @@
+streamlit>=1.39
+pandas>=2.2
+numpy>=2.0
+altair>=5.3
+pydeck>=0.9
+watchdog>=6.0; platform_system != "Windows"
+pyinstaller>=6.10
