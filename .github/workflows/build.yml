@@ -2,9 +2,27 @@ name: Build Desktop Apps
 
 on:
   push:
+    branches:
+      - main
+      - master
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      app:
+        description: "App to build"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - prodss-process
+          - dendy-process
+          - new-app
+      release_tag:
+        description: "Optional release tag (example: v1.0.2-prodss-process)"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -14,60 +32,101 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
         app: [prodss-process, dendy-process, new-app]
 
-    runs-on: ${{ matrix.os }}
+    runs-on: windows-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Resolve tag filter for matrix app
-        id: tag_filter
+      - name: Resolve build filter for matrix app
+        id: build_filter
         shell: bash
         run: |
           python - <<'PY'
           import os
-          tag = os.environ.get("GITHUB_REF_NAME", "")
-          app = os.environ.get("MATRIX_APP", "")
+          import subprocess
 
-          # Supported tag forms:
-          # - v1.2.3            -> build all apps
-          # - v1.2.3-prodss-process -> build only matching app
-            should_build = "true"
-            suffix = f"-{app}"
-            tag_body = tag[1:] if tag.startswith("v") else tag
-            if "-" in tag_body:
-              should_build = "true" if tag.endswith(suffix) else "false"
+          event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+          ref = os.environ.get("GITHUB_REF", "")
+          tag = os.environ.get("GITHUB_REF_NAME", "")
+          before = os.environ.get("GITHUB_EVENT_BEFORE", "")
+          after = os.environ.get("GITHUB_SHA", "")
+          app = os.environ.get("MATRIX_APP", "")
+          selected_app = os.environ.get("DISPATCH_APP", "all")
+
+          should_build = "true"
+
+          if ref.startswith("refs/tags/"):
+              # Supported tag forms:
+              # - v1.2.3 -> build all apps
+              # - v1.2.3-prodss-process -> build only one app
+              suffix = f"-{app}"
+              tag_body = tag[1:] if tag.startswith("v") else tag
+              if "-" in tag_body:
+                  should_build = "true" if tag.endswith(suffix) else "false"
+          elif event_name == "push":
+              # Branch pushes: only build apps affected by changed files.
+              if before and set(before) == {"0"}:
+                  # Initial push edge case, build all apps.
+                  should_build = "true"
+              else:
+                  try:
+                      output = subprocess.check_output(
+                          ["git", "diff", "--name-only", before, after],
+                          text=True,
+                      )
+                      changed_files = [line.strip() for line in output.splitlines() if line.strip()]
+                  except Exception:
+                      changed_files = []
+
+                  app_prefix = f"apps/{app}/"
+                  should_build = "true" if any(
+                      path.startswith(app_prefix)
+                      or path.startswith("shared/")
+                      or path == "pyproject.toml"
+                      or path == "requirements.txt"
+                      for path in changed_files
+                  ) else "false"
+                elif event_name == "workflow_dispatch":
+                  should_build = "true" if selected_app in ("all", app) else "false"
+
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
               fh.write(f"should_build={should_build}\n")
-          print(f"tag={tag} app={app} should_build={should_build}")
+          print(
+              f"event={event_name} ref={ref} tag={tag} before={before} after={after} "
+              f"app={app} should_build={should_build}"
+          )
           PY
         env:
           MATRIX_APP: ${{ matrix.app }}
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+          DISPATCH_APP: ${{ inputs.app || 'all' }}
 
       - name: Install app dependencies
-        if: steps.tag_filter.outputs.should_build == 'true'
+        if: steps.build_filter.outputs.should_build == 'true'
         shell: bash
         run: |
           python -m pip install --upgrade pip
           pip install -r apps/${{ matrix.app }}/requirements.txt
 
       - name: Build with PyInstaller
-        if: steps.tag_filter.outputs.should_build == 'true'
+        if: steps.build_filter.outputs.should_build == 'true'
         shell: bash
         run: |
           pyinstaller apps/${{ matrix.app }}/build.spec --noconfirm --clean
 
       - name: Package build output
-        if: steps.tag_filter.outputs.should_build == 'true'
+        if: steps.build_filter.outputs.should_build == 'true'
         shell: bash
         run: |
           python - <<'PY'
@@ -90,14 +149,17 @@ jobs:
           APP_NAME: ${{ matrix.app }}
 
       - name: Upload workflow artifact
-        if: steps.tag_filter.outputs.should_build == 'true'
+        if: steps.build_filter.outputs.should_build == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.app }}-${{ runner.os }}
           path: dist/${{ matrix.app }}-${{ runner.os }}.zip
+          retention-days: 5
 
       - name: Upload release asset
-        if: steps.tag_filter.outputs.should_build == 'true' && startsWith(github.ref, 'refs/tags/v')
+        if: steps.build_filter.outputs.should_build == 'true' && (startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != '')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/${{ matrix.app }}-*.zip
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release_tag }}
+          target_commitish: ${{ github.sha }}
