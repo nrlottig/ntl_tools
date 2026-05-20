@@ -28,56 +28,51 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        app: [prodss-process, dendy-process, new-app]
-
+  select-apps:
     runs-on: windows-latest
-
+    outputs:
+      apps_json: ${{ steps.select.outputs.apps_json }}
+      has_apps: ${{ steps.select.outputs.has_apps }}
+      release_tag: ${{ steps.select.outputs.release_tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Resolve build filter for matrix app
-        id: build_filter
+      - name: Select apps to build
+        id: select
         shell: bash
         run: |
           python - <<'PY'
+          import json
           import os
           import subprocess
 
+          all_apps = ["prodss-process", "dendy-process", "new-app"]
           event_name = os.environ.get("GITHUB_EVENT_NAME", "")
           ref = os.environ.get("GITHUB_REF", "")
-          tag = os.environ.get("GITHUB_REF_NAME", "")
+          ref_name = os.environ.get("GITHUB_REF_NAME", "")
           before = os.environ.get("GITHUB_EVENT_BEFORE", "")
           after = os.environ.get("GITHUB_SHA", "")
-          app = os.environ.get("MATRIX_APP", "")
-          selected_app = os.environ.get("DISPATCH_APP", "all")
+          dispatch_app = os.environ.get("DISPATCH_APP", "all")
+          dispatch_release_tag = os.environ.get("DISPATCH_RELEASE_TAG", "").strip()
 
-          should_build = "true"
+          apps = []
 
           if ref.startswith("refs/tags/"):
-              # Supported tag forms:
-              # - v1.2.3 -> build all apps
-              # - v1.2.3-prodss-process -> build only one app
-              suffix = f"-{app}"
-              tag_body = tag[1:] if tag.startswith("v") else tag
-              if "-" in tag_body:
-                  should_build = "true" if tag.endswith(suffix) else "false"
+              tag_body = ref_name[1:] if ref_name.startswith("v") else ref_name
+              selected = None
+              for app in all_apps:
+                  if tag_body.endswith(f"-{app}"):
+                      selected = app
+                      break
+              apps = [selected] if selected else list(all_apps)
+          elif event_name == "workflow_dispatch":
+              apps = list(all_apps) if dispatch_app == "all" else [dispatch_app]
           elif event_name == "push":
-              # Branch pushes: only build apps affected by changed files.
               if before and set(before) == {"0"}:
-                  # Initial push edge case, build all apps.
-                  should_build = "true"
+                  apps = list(all_apps)
               else:
                   try:
                       output = subprocess.check_output(
@@ -88,45 +83,66 @@ jobs:
                   except Exception:
                       changed_files = []
 
-                  app_prefix = f"apps/{app}/"
-                  should_build = "true" if any(
-                      path.startswith(app_prefix)
-                      or path.startswith("shared/")
+                  global_change = any(
+                      path.startswith("shared/")
                       or path == "pyproject.toml"
                       or path == "requirements.txt"
                       for path in changed_files
-                  ) else "false"
-                elif event_name == "workflow_dispatch":
-                  should_build = "true" if selected_app in ("all", app) else "false"
+                  )
 
+                  if global_change:
+                      apps = list(all_apps)
+                  else:
+                      apps = [
+                          app for app in all_apps
+                          if any(path.startswith(f"apps/{app}/") for path in changed_files)
+                      ]
 
+          has_apps = "true" if apps else "false"
+          apps_json = json.dumps(apps)
+
+          print(f"event={event_name} ref={ref} apps={apps}")
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
-              fh.write(f"should_build={should_build}\n")
-          print(
-              f"event={event_name} ref={ref} tag={tag} before={before} after={after} "
-              f"app={app} should_build={should_build}"
-          )
+              fh.write(f"apps_json={apps_json}\n")
+              fh.write(f"has_apps={has_apps}\n")
+              fh.write(f"release_tag={dispatch_release_tag}\n")
           PY
         env:
-          MATRIX_APP: ${{ matrix.app }}
           GITHUB_EVENT_BEFORE: ${{ github.event.before }}
           DISPATCH_APP: ${{ inputs.app || 'all' }}
+          DISPATCH_RELEASE_TAG: ${{ inputs.release_tag || '' }}
+
+  build:
+    needs: select-apps
+    if: needs.select-apps.outputs.has_apps == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        app: ${{ fromJson(needs.select-apps.outputs.apps_json) }}
+
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
       - name: Install app dependencies
-        if: steps.build_filter.outputs.should_build == 'true'
         shell: bash
         run: |
           python -m pip install --upgrade pip
           pip install -r apps/${{ matrix.app }}/requirements.txt
 
       - name: Build with PyInstaller
-        if: steps.build_filter.outputs.should_build == 'true'
         shell: bash
         run: |
           pyinstaller apps/${{ matrix.app }}/build.spec --noconfirm --clean
 
       - name: Package build output
-        if: steps.build_filter.outputs.should_build == 'true'
         shell: bash
         run: |
           python - <<'PY'
@@ -149,7 +165,6 @@ jobs:
           APP_NAME: ${{ matrix.app }}
 
       - name: Upload workflow artifact
-        if: steps.build_filter.outputs.should_build == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.app }}-${{ runner.os }}
@@ -157,9 +172,9 @@ jobs:
           retention-days: 5
 
       - name: Upload release asset
-        if: steps.build_filter.outputs.should_build == 'true' && (startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != '')
+        if: startsWith(github.ref, 'refs/tags/v') || needs.select-apps.outputs.release_tag != ''
         uses: softprops/action-gh-release@v2
         with:
           files: dist/${{ matrix.app }}-*.zip
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release_tag }}
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || needs.select-apps.outputs.release_tag }}
           target_commitish: ${{ github.sha }}
