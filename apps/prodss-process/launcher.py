@@ -50,6 +50,10 @@ def main() -> int:
 
     os.environ["STREAMLIT_SERVER_HEADLESS"] = "true"
     os.environ["STREAMLIT_BROWSER_GATHER_USAGE_STATS"] = "false"
+    # In a frozen (PyInstaller) build Streamlit cannot detect a released install
+    # and defaults global.developmentMode to true, which forbids setting
+    # server.port. Force it off so the explicit port is accepted.
+    os.environ["STREAMLIT_GLOBAL_DEVELOPMENT_MODE"] = "false"
 
     # Open the browser once the server is reachable. Streamlit runs in the main
     # thread (below) and blocks, so the wait/open loop runs on a background thread.
