@@ -29,9 +29,8 @@ Output is written to `dist/<app-name>/`.
 
 ## Tagging Strategy
 
-- Push to `main` or `master`: build all apps on Windows and upload workflow artifacts
-- `v1.2.3`: build all apps on Windows and upload release assets
-- `v1.2.3-prodss-process`: build only one app on Windows and upload release assets
+- Builds are run manually from GitHub Actions (web UI)
+- `release_tag` in manual run controls release naming and asset upload
 
 ## Build On Push
 
@@ -41,7 +40,16 @@ git commit -m "Your change"
 git push origin main
 ```
 
-This creates Windows build artifacts in the workflow run, but only for apps with changes in their own folder under apps/.
+This only updates source code. It does not trigger builds automatically.
+
+## Build From GitHub Web UI
+
+1. Open the repository on GitHub.com.
+2. Go to **Actions** -> **Build Desktop Apps**.
+3. Click **Run workflow**.
+4. Choose `app` (`all` or one app).
+5. Optionally set `release_tag` (example: `v1.0.2-prodss-process`) to publish Release assets.
+6. Click **Run workflow**.
 
 ## Build A Release Download
 
@@ -58,6 +66,8 @@ Build all app releases:
 git tag v1.0.0
 git push origin v1.0.0
 ```
+
+These tag commands are optional. Manual Action runs with `release_tag` are the primary release path.
 
 ## No-Tag Release (GitHub Desktop Friendly)
 
