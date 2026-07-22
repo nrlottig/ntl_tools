@@ -159,7 +159,7 @@ jobs:
           APP_NAME: ${{ matrix.app }}
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.app }}-${{ runner.os }}
           path: dist/${{ matrix.app }}-${{ runner.os }}.zip
@@ -167,7 +167,7 @@ jobs:
 
       - name: Upload release asset
         if: startsWith(github.ref, 'refs/tags/v') || needs.select-apps.outputs.release_tag != ''
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/${{ matrix.app }}-*.zip
           tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || needs.select-apps.outputs.release_tag }}

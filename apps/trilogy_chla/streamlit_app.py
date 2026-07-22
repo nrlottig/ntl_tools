@@ -422,8 +422,20 @@ def compute_samples(
 	# Blank correction always uses the average of the two blank inputs.
 	out["blank"] = float(blank_mean)
 
-	out["dilution"] = pd.to_numeric(out["dilution"], errors="coerce")
-	out["filtered_volume_ml"] = pd.to_numeric(out["volume"], errors="coerce").replace(0, np.nan)
+	dilution_values = pd.to_numeric(out["dilution"], errors="coerce")
+	filtered_values = pd.to_numeric(out["volume"], errors="coerce")
+
+	# Dilution and filtered volume are required to be whole-number entries.
+	dilution_non_integer = dilution_values.notna() & ~np.isclose(dilution_values, np.round(dilution_values))
+	filtered_non_integer = filtered_values.notna() & ~np.isclose(filtered_values, np.round(filtered_values))
+	if dilution_non_integer.any():
+		raise ValueError("Dilution values must be integers.")
+	if filtered_non_integer.any():
+		raise ValueError("Filtered volume values must be integers.")
+
+	filtered_values = filtered_values.where(filtered_values != 0, np.nan)
+	out["dilution"] = np.round(dilution_values).astype("Int64")
+	out["filtered_volume_ml"] = np.round(filtered_values).astype("Int64")
 
 	out["extraction_volume_ml"] = float(extraction_volume_ml)
 
@@ -478,6 +490,7 @@ def init_state() -> None:
 		"sample_text": "",
 		"sample_has_header": True,
 		"sample_result": None,
+		"single_result": None,
 	}
 	for key, value in defaults.items():
 		if key not in st.session_state:
@@ -527,7 +540,7 @@ st.caption("Standards are persisted locally on this computer and can be reused a
 init_db()
 init_state()
 
-tabs = st.tabs(["Standards", "Samples"])
+tabs = st.tabs(["Standards", "Samples", "Single Sample"])
 
 with tabs[0]:
 	st.subheader("Standards")
@@ -704,10 +717,9 @@ with tabs[1]:
 
 			extraction_volume_ml = st.number_input(
 				"Extraction volume (mL)",
-				min_value=0.001,
-				value=25.0,
-				step=0.5,
-				format="%.3f",
+				min_value=1,
+				value=25,
+				step=1,
 			)
 
 			st.checkbox("Sample data has header row", key="sample_has_header")
@@ -772,5 +784,138 @@ with tabs[1]:
 				"Download sample results CSV",
 				data=export_result.to_csv(index=False).encode("utf-8"),
 				file_name="trilogy_chla_sample_results.csv",
+				mime="text/csv",
+			)
+
+with tabs[2]:
+	st.subheader("Single Sample Analysis")
+	standards = standards_df()
+
+	if standards.empty:
+		st.warning("Create at least one saved standard first.")
+	else:
+		labels = [standard_label(row) for _, row in standards.iterrows()]
+		idx_to_id = {labels[i]: int(standards.iloc[i]["id"]) for i in range(len(labels))}
+		selected_label = st.selectbox("Standard to use", options=labels, key="single_standard")
+		standard_id = idx_to_id[selected_label]
+		row = get_standard(standard_id)
+
+		st.write(
+			f"Using standard id {standard_id}: r_mean={row['r_mean']:.6f}, fs_mean={row['fs_mean']:.6f}"
+		)
+
+		inputs_col, formula_col = st.columns([1, 1.2], vertical_alignment="top")
+
+		with inputs_col:
+			blank = st.number_input("Blank", value=0.0, step=0.1, format="%.6f", key="single_blank")
+			dilution = st.number_input(
+				"Dilution factor",
+				min_value=1,
+				value=1,
+				step=1,
+				key="single_dilution",
+			)
+			filtered_volume = st.number_input(
+				"Filtered volume (mL)",
+				min_value=1,
+				value=1000,
+				step=1,
+				key="single_filtered_volume",
+			)
+			extraction_volume = st.number_input(
+				"Extraction volume (mL)",
+				min_value=1,
+				value=25,
+				step=1,
+				key="single_extraction_volume",
+			)
+			pre_rfu = st.number_input("Pre RFU", value=0.0, step=1.0, format="%.6f", key="single_pre")
+			has_post = st.checkbox("Post RFU available", value=False, key="single_has_post")
+			post_rfu = st.number_input(
+				"Post RFU",
+				value=0.0,
+				step=1.0,
+				format="%.6f",
+				disabled=not has_post,
+				key="single_post",
+			)
+			clamp_negative = st.checkbox(
+				"Clamp negative outputs to zero",
+				value=True,
+				key="single_clamp",
+			)
+
+			if st.button("Calculate single sample", use_container_width=True):
+				fb_cor = float(pre_rfu) - float(blank)
+				total_chla = (fb_cor * float(row["fs_mean"]) * float(extraction_volume) * float(dilution)) / float(
+					filtered_volume
+				)
+
+				result = {
+					"standard_id": standard_id,
+					"blank": float(blank),
+					"dilution": int(dilution),
+					"filtered_volume_ml": int(filtered_volume),
+					"extraction_volume_ml": int(extraction_volume),
+					"pre_rfu": float(pre_rfu),
+					"fb_cor": fb_cor,
+					"total_chla_ug_l": total_chla,
+				}
+
+				if has_post:
+					fa_cor = float(post_rfu) - float(blank)
+					acid_ratio = np.nan if np.isclose(fa_cor, 0.0) else (fb_cor / fa_cor)
+					denom = float(row["r_mean"]) - 1.0
+					if np.isclose(denom, 0.0):
+						corrected = np.nan
+						pheo = np.nan
+					else:
+						scale = (
+							(float(row["r_mean"]) / denom)
+							* float(row["fs_mean"])
+							* float(dilution)
+							* (float(extraction_volume) / float(filtered_volume))
+						)
+						corrected = scale * (fb_cor - fa_cor)
+						pheo = scale * ((float(row["r_mean"]) * fa_cor) - fb_cor)
+
+					result.update(
+						{
+							"post_rfu": float(post_rfu),
+							"fa_cor": fa_cor,
+							"acid_ratio": acid_ratio,
+							"corrected_chla_ug_l": corrected,
+							"pheophytin_ug_l": pheo,
+						}
+					)
+
+				if clamp_negative:
+					for col in ("total_chla_ug_l", "corrected_chla_ug_l", "pheophytin_ug_l"):
+						if col in result and pd.notna(result[col]):
+							result[col] = max(result[col], 0.0)
+
+				st.session_state["single_result"] = pd.DataFrame([result])
+
+		with formula_col:
+			st.markdown("**Equations**")
+			st.latex(
+				r"Total\ Chla = \frac{F_b^{cor}\times Slope\times V_{extract}\times Dilution}{V_{filtered}}"
+			)
+			st.latex(r"Acid\ Ratio = \frac{F_b^{cor}}{F_a^{cor}}")
+			st.latex(
+				r"Corrected\ Chla = \left(\frac{R}{R-1}\right)\times Slope\times(F_b^{cor}-F_a^{cor})\times Dilution\times\frac{V_{extract}}{V_{filtered}}"
+			)
+			st.latex(
+				r"Pheophytin = \left(\frac{R}{R-1}\right)\times Slope\times((R\times F_a^{cor})-F_b^{cor})\times Dilution\times\frac{V_{extract}}{V_{filtered}}"
+			)
+
+		single_result = st.session_state.get("single_result")
+		if single_result is not None:
+			st.markdown("Calculated result")
+			st.dataframe(single_result, use_container_width=True, hide_index=True)
+			st.download_button(
+				"Download single sample CSV",
+				data=single_result.to_csv(index=False).encode("utf-8"),
+				file_name="trilogy_chla_single_sample.csv",
 				mime="text/csv",
 			)
