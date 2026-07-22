@@ -1,7 +1,7 @@
 import os
 import socket
-import subprocess
 import sys
+import threading
 import time
 import webbrowser
 from pathlib import Path
@@ -26,17 +26,17 @@ def resolve_app_path() -> Path:
     return Path(__file__).resolve().parent / APP_FILENAME
 
 
-def wait_for_server(url: str, timeout_seconds: int = 20) -> bool:
+def open_browser_when_ready(url: str, timeout_seconds: int = 30) -> None:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         try:
             import urllib.request
 
             with urllib.request.urlopen(url, timeout=1):
-                return True
+                webbrowser.open(url)
+                return
         except Exception:
             time.sleep(0.25)
-    return False
 
 
 def main() -> int:
@@ -48,13 +48,13 @@ def main() -> int:
     port = find_free_port()
     url = f"http://127.0.0.1:{port}"
 
-    env = os.environ.copy()
-    env["STREAMLIT_SERVER_HEADLESS"] = "true"
-    env["STREAMLIT_BROWSER_GATHER_USAGE_STATS"] = "false"
+    os.environ["STREAMLIT_SERVER_HEADLESS"] = "true"
+    os.environ["STREAMLIT_BROWSER_GATHER_USAGE_STATS"] = "false"
+    os.environ["STREAMLIT_GLOBAL_DEVELOPMENT_MODE"] = "false"
 
-    command = [
-        sys.executable,
-        "-m",
+    threading.Thread(target=open_browser_when_ready, args=(url,), daemon=True).start()
+
+    sys.argv = [
         "streamlit",
         "run",
         str(app_path),
@@ -70,16 +70,9 @@ def main() -> int:
         "none",
     ]
 
-    proc = subprocess.Popen(command, env=env)
+    from streamlit.web import cli as stcli
 
-    if wait_for_server(url):
-        webbrowser.open(url)
-
-    try:
-        return proc.wait()
-    except KeyboardInterrupt:
-        proc.terminate()
-        return 0
+    return stcli.main()
 
 
 if __name__ == "__main__":

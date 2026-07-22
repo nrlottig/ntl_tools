@@ -3,36 +3,54 @@
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_data_files, copy_metadata
+from PyInstaller.utils.hooks import collect_all, copy_metadata
 
 
-APP_NAME = "new-app"
+APP_NAME = "trilogy_chla"
 PROJECT_DIR = Path(SPECPATH).resolve()
 
 
 datas = [
     (str(PROJECT_DIR / "streamlit_app.py"), "."),
 ]
+binaries = []
+hiddenimports = [
+    "streamlit.web.cli",
+    "streamlit.runtime.scriptrunner.magic_funcs",
+    "altair",
+    "pydeck",
+    "pandas",
+    "numpy",
+]
 
-datas += collect_data_files("streamlit")
-datas += collect_data_files("altair")
-datas += collect_data_files("pydeck")
-datas += copy_metadata("streamlit")
-datas += copy_metadata("altair")
-datas += copy_metadata("pydeck")
+for pkg in ("streamlit", "altair", "pydeck"):
+    pkg_datas, pkg_binaries, pkg_hiddenimports = collect_all(pkg)
+    datas += pkg_datas
+    binaries += pkg_binaries
+    hiddenimports += pkg_hiddenimports
+
+for dist in (
+    "streamlit",
+    "altair",
+    "pydeck",
+    "pandas",
+    "numpy",
+    "pyarrow",
+    "click",
+    "tornado",
+):
+    try:
+        datas += copy_metadata(dist)
+    except Exception:
+        pass
 
 
 a = Analysis(
     [str(PROJECT_DIR / "launcher.py")],
     pathex=[str(PROJECT_DIR)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
-    hiddenimports=[
-        "streamlit.web.cli",
-        "streamlit.runtime.scriptrunner.magic_funcs",
-        "altair",
-        "pydeck",
-    ],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -60,7 +78,7 @@ if sys.platform == "darwin":
         exe,
         name=f"{APP_NAME}.app",
         icon=None,
-        bundle_identifier="edu.wisc.cfl.newapp",
+        bundle_identifier="edu.wisc.cfl.trilogychla",
     )
 
 coll = COLLECT(
