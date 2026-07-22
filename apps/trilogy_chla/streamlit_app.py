@@ -689,39 +689,47 @@ with tabs[1]:
 			f"Using standard id {standard_id}: r_mean={row['r_mean']:.6f}, fs_mean={row['fs_mean']:.6f}"
 		)
 		st.caption("Uses standard-file values: r_mean as acid-ratio mean and fs_mean as slope.")
-		b1, b2 = st.columns(2)
-		with b1:
-			blank_1 = st.number_input("Blank 1", value=0.0, step=0.1, format="%.6f")
-		with b2:
-			blank_2 = st.number_input("Blank 2", value=0.0, step=0.1, format="%.6f")
-		blank_mean = (blank_1 + blank_2) / 2.0
-		st.caption(f"Average blank used in calculations: {blank_mean:.6f}")
 
-		extraction_volume_ml = st.number_input(
-			"Extraction volume (mL)",
-			min_value=0.001,
-			value=25.0,
-			step=0.5,
-			format="%.3f",
-		)
-		st.latex(
-			r"Corrected\ Chla = \left(\frac{R}{R-1}\right)\times Slope\times(F_b^{cor}-F_a^{cor})\times Dilution\times\frac{V_{extract}}{V_{filtered}}"
-		)
-		st.latex(
-			r"Pheophytin = \left(\frac{R}{R-1}\right)\times Slope\times((R\times F_a^{cor})-F_b^{cor})\times Dilution\times\frac{V_{extract}}{V_{filtered}}"
-		)
-		st.latex(
-			r"Total\ Chla = \frac{F_b^{cor}\times Slope\times V_{extract}\times Dilution}{V_{filtered}}"
-		)
+		inputs_col, formula_col = st.columns([1, 1.35], vertical_alignment="top")
 
-		st.checkbox("Sample data has header row", key="sample_has_header")
-		st.text_area(
-			"Paste tab-delimited sample data",
-			key="sample_text",
-			height=200,
-			placeholder="Lake\tDate\tDepth\tRep\tVolume\tRFUb\tRFUa\tDilution",
-		)
-		clamp_negative = st.checkbox("Clamp negative chla_ug_l to zero", value=True)
+		with inputs_col:
+			st.markdown("**Inputs**")
+			b1, b2 = st.columns(2)
+			with b1:
+				blank_1 = st.number_input("Blank 1", value=0.0, step=0.1, format="%.6f")
+			with b2:
+				blank_2 = st.number_input("Blank 2", value=0.0, step=0.1, format="%.6f")
+			blank_mean = (blank_1 + blank_2) / 2.0
+			st.caption(f"Average blank used in calculations: {blank_mean:.6f}")
+
+			extraction_volume_ml = st.number_input(
+				"Extraction volume (mL)",
+				min_value=0.001,
+				value=25.0,
+				step=0.5,
+				format="%.3f",
+			)
+
+			st.checkbox("Sample data has header row", key="sample_has_header")
+			st.text_area(
+				"Paste tab-delimited sample data",
+				key="sample_text",
+				height=200,
+				placeholder="Lake\tDate\tDepth\tRep\tVolume\tRFUb\tRFUa\tDilution",
+			)
+			clamp_negative = st.checkbox("Clamp negative outputs to zero", value=True)
+
+		with formula_col:
+			st.markdown("**Equations**")
+			st.latex(
+				r"Corrected\ Chla = \left(\frac{R}{R-1}\right)\times Slope\times(F_b^{cor}-F_a^{cor})\times Dilution\times\frac{V_{extract}}{V_{filtered}}"
+			)
+			st.latex(
+				r"Pheophytin = \left(\frac{R}{R-1}\right)\times Slope\times((R\times F_a^{cor})-F_b^{cor})\times Dilution\times\frac{V_{extract}}{V_{filtered}}"
+			)
+			st.latex(
+				r"Total\ Chla = \frac{F_b^{cor}\times Slope\times V_{extract}\times Dilution}{V_{filtered}}"
+			)
 
 		if st.button("Process samples", use_container_width=True):
 			try:
